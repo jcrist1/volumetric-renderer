@@ -1,0 +1,41 @@
+[package]
+name = "volumetric-renderer"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sycamore = "0.8.0-beta.5"
+console_error_panic_hook = "=0.1.5"
+js-sys = "0.3.19"
+lazy_static = "1.3.0"
+nalgebra = "0.18.0"
+wasm-bindgen = "0.2.72"
+arcball = "1.0.0"
+cgmath = "0.17.0"
+
+
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    'Document',
+    'Element',
+    'EventTarget',
+    'ImageData',
+    'ImageBitmap',
+    'HtmlCanvasElement',
+    'MouseEvent',
+    'WheelEvent',
+    'WebGlBuffer',
+    'WebGlProgram',
+    "WebGl2RenderingContext",
+    'WebGlShader',
+    'WebGlTexture',
+    'WebGlUniformLocation',
+    "WebGlVertexArrayObject",
+    "WebGlActiveInfo",
+    'Window',
+]
+
