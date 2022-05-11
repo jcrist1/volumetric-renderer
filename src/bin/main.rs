@@ -1,10 +1,12 @@
 use sycamore::prelude::*;
+use wasm_bindgen::closure::WasmClosure;
+use wasm_bindgen::JsCast;
+use web_sys::Event;
 
 fn main() {
     sycamore::render(|ctx| {
         view! { ctx,
-             div {"Hello"}
-             canvas(id = "volumetric-3d-canvas", width = 1200, height = 800)
+            volumetric_renderer::App {}
         }
     });
 }

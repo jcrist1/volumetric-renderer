@@ -39,10 +39,17 @@ impl<T: Clone + Zero, const N: usize> Vector<T, N> {
 impl<T: Clone, U, V, const N: usize> Add<Vector<U, N>> for Vector<T, N>
 where
     U: Add<T, Output = V>,
+    V: Default + Copy,
 {
     type Output = Vector<V, N>;
     fn add(self, rhs: Vector<U, N>) -> Vector<V, N> {
-        let new_data: [V; N] = self.data.zip(rhs.data).map(|(left, right)| right + left);
+        let mut new_data: [V; N] = [V::default(); N];
+        for (target, (left, right)) in new_data
+            .iter_mut()
+            .zip(self.data.into_iter().zip(rhs.data.into_iter()))
+        {
+            *target = right + left
+        }
 
         Vector { data: new_data }
     }
