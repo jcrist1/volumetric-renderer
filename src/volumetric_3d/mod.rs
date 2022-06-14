@@ -2,6 +2,8 @@ mod gl_utils;
 pub(crate) mod shaders;
 
 extern crate wasm_bindgen;
+use std::iter::repeat;
+
 use anyhow::{Context, Result};
 use cgmath::Matrix4;
 use gl_utils::GlUtils;
@@ -17,9 +19,6 @@ use crate::{
     CanvasDims, SharedMut,
 };
 
-const VOLUME_X: i32 = 256;
-const VOLUME_Y: i32 = 256;
-const VOLUME_Z: i32 = 256;
 const CUBE_STRIP: [u8; 42] = [
     255, 255, 0, 0, 255, 0, 255, 255, 255, 0, 255, 255, 0, 0, 255, 0, 255, 0, 0, 0, 0, 255, 255, 0,
     255, 0, 0, 255, 255, 255, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 0, 0,
@@ -182,7 +181,9 @@ impl ProgramReady {
         let CanvasDims { width, height } = get_canvas_dims(app_state)?;
         let persp_proj = cgmath::perspective(cgmath::Deg(65.0), width / height, 1.0, 200.0);
 
+        web_sys::console::log_1(&"iin render".into());
         if should_i_draw(app_state) {
+            web_sys::console::log_1(&"i should draw".into());
             let DrawData { proj_view, eye_pos } = get_arcball_data(app_state);
             let proj_view = persp_proj * proj_view;
             let camera_pos: [f32; 3] = [eye_pos.x, eye_pos.y, eye_pos.z];
@@ -195,18 +196,23 @@ impl ProgramReady {
                     arr[i] = x;
                     i += 1
                 });
-
             self.render(&camera_pos, &arr);
             set_arcball_changed_to_false_after_draw(app_state);
         }
         Ok(())
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dims {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
 
 impl GlState<ProgramCompiledWithTextures<Volumetric3DLocations, Volumetric3DTextures>> {
-    pub(crate) fn set_volume_metadata(self) -> ProgramReady {
+    pub(crate) fn set_volume_metadata(self, dims: Dims) -> ProgramReady {
         let GlState(gl, mut program_compiled_with_textures) = self;
-        let vol_dims: [i32; 3] = [VOLUME_X, VOLUME_Y, VOLUME_Z];
+        let vol_dims: [i32; 3] = [dims.x, dims.y, dims.z];
         let vol_scale: [f32; 3] = [1.0, 1.0, 1.0];
         program_compiled_with_textures.set_volume_metadata(&gl, &vol_dims, &vol_scale);
         ProgramReady(gl, program_compiled_with_textures)
@@ -229,6 +235,7 @@ impl GlState<ProgramCompiled<Volumetric3DLocations>> {
         self,
         colormap_data: &[u8],
         volume_density_data: &[u8],
+        dims: Dims,
     ) -> Result<GlState<ProgramCompiledWithTextures<Volumetric3DLocations, Volumetric3DTextures>>>
     {
         let GlState(gl, program_compiled) = self;
@@ -255,6 +262,7 @@ impl GlState<ProgramCompiled<Volumetric3DLocations>> {
             WebGl::TEXTURE_WRAP_S,
             WebGl::CLAMP_TO_EDGE as i32,
         );
+        web_sys::console::log_1(&format!("colormap len: {}", colormap_data.len()).into());
         gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(
             WebGl::TEXTURE_2D,
             0,
@@ -274,14 +282,7 @@ impl GlState<ProgramCompiled<Volumetric3DLocations>> {
             .context("Couldn't create volume texture")?;
         gl.active_texture(WebGl::TEXTURE0);
         gl.bind_texture(WebGl::TEXTURE_3D, Some(&volumetric));
-        gl.tex_storage_3d(
-            WebGl::TEXTURE_3D,
-            1,
-            WebGl::R8,
-            VOLUME_X,
-            VOLUME_Y,
-            VOLUME_Z,
-        );
+        gl.tex_storage_3d(WebGl::TEXTURE_3D, 1, WebGl::R8, dims.x, dims.y, dims.z);
         gl.tex_parameteri(
             WebGl::TEXTURE_3D,
             WebGl::TEXTURE_MIN_FILTER,
@@ -303,24 +304,34 @@ impl GlState<ProgramCompiled<Volumetric3DLocations>> {
             WebGl::CLAMP_TO_EDGE as i32,
         );
 
-        web_sys::console::log_1(&format!("starting 3d {}", volume_density_data.len()).into());
+        web_sys::console::log_1(
+            &format!(
+                "starting 3d {} {}",
+                volume_density_data.len(),
+                dims.x * dims.y * dims.z,
+            )
+            .into(),
+        );
+
+        let quant = 0;
+        let n = 7055;
+        let buffered_data = repeat(0)
+            .take(quant)
+            .chain(volume_density_data.iter().copied())
+            .chain(repeat(0).take(n - quant))
+            .collect::<Vec<_>>();
         gl.tex_sub_image_3d_with_opt_u8_array(
             WebGl::TEXTURE_3D,
             0,
             0,
             0,
             0,
-            VOLUME_X,
-            VOLUME_Y,
-            VOLUME_Z,
+            dims.x,
+            dims.y,
+            dims.z,
             WebGl::RED,
             WebGl::UNSIGNED_BYTE,
-            Some(
-                &volume_density_data
-                    .iter()
-                    .map(|x| x / 5)
-                    .collect::<Vec<_>>()[..],
-            ),
+            Some(&buffered_data),
         )
         .map_err(|_| Error::Message("".into()))
         .context("failed tex sub image 3d")?;

@@ -18,6 +18,7 @@ cgmath = "0.18"
 anyhow = "1.0.57"
 thiserror = "1.0.31"
 wasm-timer = "0.2.5"
+binding_site_search = {path = "../binding_site_search"}
 
 
 

@@ -12,6 +12,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 use anyhow::{Context, Result};
 
 use app_state::AppState;
+use binding_site_search::ccp4::{CCP4Data, CCP4Error};
 use gl_setup::{mouse_down_handler, mouse_move_handler, mouse_scroll_handler, mouse_up_handler};
 use std::time;
 use sycamore::motion::create_raf_loop;
@@ -50,8 +51,15 @@ pub enum Error {
         #[from]
         source: reqwasm::Error,
     },
+    #[error("Couldn't parse CCP4Data: {0}")]
+    CCP4(String),
 }
 
+impl From<CCP4Error> for Error {
+    fn from(CCP4Error(message): CCP4Error) -> Self {
+        Error::CCP4(message)
+    }
+}
 impl<T> From<PoisonError<MutexGuard<'_, T>>> for Error {
     fn from(_: PoisonError<MutexGuard<'_, T>>) -> Self {
         Error::Poisoned
@@ -110,6 +118,7 @@ impl GlDraw {
         &self,
         app_state: &SharedMut<AppState>,
         data_buffer: &[u8],
+        dims: Dims,
     ) -> Result<ProgramReady> {
         let GlDraw(gl, canvas_dims) = self;
         let empty_state = volumetric_3d::new_empty_state(gl.clone());
@@ -132,17 +141,16 @@ impl GlDraw {
 
         gl_state.init();
         let colormap_data: Vec<u8> = (0..256)
-            .map(|i| vec![i, i, 10, 50])
+            .map(|i| vec![i, i, 10, 1])
             .flat_map(|x| x.into_iter())
             .map(|x| x as u8)
             .collect::<Vec<_>>();
-        let gl_state = gl_state
-            .build_textures(&colormap_data, &data_buffer)
-            .unwrap();
         web_sys::console::log_1(&"Got here 2".into());
+        let gl_state = gl_state
+            .build_textures(&colormap_data, data_buffer, dims)
+            .unwrap();
 
-        let program_ready = gl_state.set_volume_metadata();
-        web_sys::console::log_1(&"Got here 3".into());
+        let program_ready = gl_state.set_volume_metadata(dims);
 
         let mut app_state_ref = app_state
             .lock()
@@ -177,9 +185,8 @@ pub fn App<G: Html>(ctx: Scope) -> View<G> {
     }
 }
 
-async fn load_data_fut(app_state_signal: SharedMut<AppState>) -> Result<()> {
+async fn load_data_fut(app_state_signal: SharedMut<AppState>) -> Result<Dims> {
     let data = reqwasm::http::Request::get("data/skull_256x256x256_uint8.raw")
-        //.header("Content-Type", "application/octet-stream")
         .send()
         .await
         .map_err(Error::from)
@@ -188,6 +195,24 @@ async fn load_data_fut(app_state_signal: SharedMut<AppState>) -> Result<()> {
         .await
         .map_err(Error::from)
         .context("Failed to get volumetric data")?;
+    web_sys::console::log_1(&format!("skull_data size {} {}", data.len(), 256 * 256 * 256).into());
+
+    let data = reqwasm::http::Request::get("data/3bgf.ccp4")
+        .send()
+        .await
+        .map_err(Error::from)
+        .context("Failed to get volumetric data")?
+        .binary()
+        .await
+        .map_err(Error::from)
+        .context("Failed to get volumetric data")?;
+    let molecular_data: CCP4Data<f32> = CCP4Data::from_read(&mut data.as_slice())
+        .map_err(Error::from)
+        .context("failed to load molecular data in load_data_fut")?;
+    let x = molecular_data.header.n_cols;
+    let y = molecular_data.header.n_rows;
+    let z = molecular_data.header.n_sects;
+    let dims = Dims { x, y, z };
 
     web_sys::console::log_1(&format!("Data size: {}", data.len()).into());
 
@@ -195,8 +220,37 @@ async fn load_data_fut(app_state_signal: SharedMut<AppState>) -> Result<()> {
         .lock()
         .map_err(Error::from)
         .context("App State mutex poisoned. Time to restart")?;
-    app_state.density_data = data;
-    Ok(())
+    let mean = molecular_data
+        .data
+        .iter()
+        .map(|x| if x.is_normal() { x.abs() } else { 0.0 })
+        .sum::<f32>()
+        / (data.len() as f32);
+
+    web_sys::console::log_1(&format!("mean value: {mean:?}").into());
+    let bytes: Vec<u8> = molecular_data
+        .data
+        .into_iter()
+        .map(|x| {
+            if x.is_normal() {
+                (x.abs() * 256.0 / 5.0).round() as u8
+            } else {
+                0
+            }
+        })
+        .collect();
+    let bytes_transform =
+        bytes.iter().copied().map(|x| x as f32).sum::<f32>() / (bytes.len() as f32);
+    web_sys::console::log_1(
+        &format!(
+            "{}, {x}, {y}, {z}, {}, {bytes_transform}",
+            bytes.len(),
+            x * y * z
+        )
+        .into(),
+    );
+    app_state.density_data = bytes;
+    Ok(dims)
 }
 
 async fn fun(
@@ -208,12 +262,17 @@ async fn fun(
     let program_ready_clone = program_ready.clone();
     let app_state_clone = app_state.clone();
     let (_, start, _) = create_raf_loop(ctx, move || {
+        let len = (&app_state_clone)
+            .lock()
+            .expect("Failed to lock")
+            .density_data
+            .len();
         if let Some(pr) = &mut *program_ready_clone.clone().lock().expect("poisoned lock") {
-            pr.render_from_state(&app_state_clone);
+            pr.render_from_state(&app_state_clone).log_err();
         }
         true
     });
-    load_data_fut(app_state.clone()).await?;
+    let dims = load_data_fut(app_state.clone()).await?;
 
     let density_data = app_state
         .clone()
@@ -230,13 +289,16 @@ async fn fun(
         .context("failed to lock gl_draw in load_data")?
         .as_ref()
     {
-        let mut pr = gl_draw.setup_program(&app_state, density_data.as_slice())?;
+        web_sys::console::log_1(&"done loading image, now let's set up the program".into());
+        let mut pr = gl_draw.setup_program(&app_state, density_data.as_slice(), dims)?;
         let mut pr_ref = program_ready
             .lock()
             .map_err(Error::from)
             .context("failed to lock program_ready mutex")?;
+        web_sys::console::log_1(&"going to render".into());
         pr.render_from_state(&app_state)?;
         *pr_ref = Some(pr);
+        web_sys::console::log_1(&"time to animate".into());
         start();
     } else {
         web_sys::console::log_1(&"no web gl context set up, so cannot set up program".into())
